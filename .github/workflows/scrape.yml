@@ -38,6 +38,7 @@ jobs:
           TIME_LIMIT_MS: "240000"
           DELAY_MS: "300"
           FETCH_TIMEOUT_MS: "15000"
+          CONCURRENCE: "8"
 
       - name: Commit et push des résultats
         if: always()

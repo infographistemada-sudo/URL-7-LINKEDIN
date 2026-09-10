@@ -80,8 +80,24 @@ Variables d'environnement passées au script (modifiables dans
 
 - `TIME_LIMIT_MS` : durée max de traitement par exécution (défaut
   240000 = 4 min).
-- `DELAY_MS` : pause entre deux requêtes HTTP, pour rester poli envers
-  les sites visités (défaut 300 ms).
+- `DELAY_MS` : pause entre deux requêtes HTTP sur le même site, pour
+  rester poli (défaut 300 ms).
+- `FETCH_TIMEOUT_MS` : délai max d'attente par requête HTTP avant
+  d'abandonner ce site et de passer au suivant (défaut 15000 = 15 s).
+- `CONCURRENCE` : nombre d'URLs traitées **en parallèle** à chaque cycle
+  (défaut 8). À augmenter si tu as beaucoup de lignes (ex. 15-20) pour
+  accélérer, ou à réduire si tu vois des erreurs/blocages plus fréquents.
+
+### Fichiers volumineux (plusieurs milliers de lignes)
+
+Avec un traitement en parallèle (`CONCURRENCE=8`) et un cycle de 4 min
+toutes les 15 min, compte grossièrement quelques centaines de lignes
+traitées par cycle selon la rapidité des sites visités — pour un fichier
+de plusieurs milliers d'URLs, l'extraction complète peut donc prendre
+plusieurs heures, répartie sur de nombreux cycles automatiques. C'est
+normal : regarde l'onglet **Actions** pour voir les commits successifs
+progresser, plutôt que d'attendre un seul run qui traiterait tout d'un
+coup.
 
 ## Différences avec la version Google Sheets
 

@@ -25,6 +25,10 @@ const STOP_FILE = process.env.STOP_FILE || path.join(__dirname, "..", "data", "S
 const TIME_LIMIT_MS = parseInt(process.env.TIME_LIMIT_MS || "240000", 10);
 // Petite pause entre deux requêtes pour rester poli envers les sites visités.
 const DELAY_MS = parseInt(process.env.DELAY_MS || "300", 10);
+// Nombre d'URLs traitées EN PARALLÈLE. Avec plusieurs milliers de lignes,
+// un traitement séquentiel (1 à la fois) est beaucoup trop lent : monter
+// la concurrence accélère très nettement le débit global.
+const CONCURRENCE = parseInt(process.env.CONCURRENCE || "8", 10);
 // Timeout par requête HTTP : évite qu'un site lent ou muet ne bloque tout
 // le script indéfiniment (fetch n'a pas de timeout par défaut).
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || "15000", 10);
@@ -256,18 +260,30 @@ function extraireLiensSecondaires(codeHtml, urlRacineInitiale) {
 }
 
 async function recupererContenuWeb(url) {
+  console.log(`   ↳ requête : ${url}`);
   const controleur = new AbortController();
   const minuteur = setTimeout(() => controleur.abort(), FETCH_TIMEOUT_MS);
-  try {
+
+  const tenterFetch = (async () => {
     const reponse = await fetch(url, {
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
       signal: controleur.signal,
     });
     return await reponse.text();
+  })();
+
+  // Filet de sécurité : si pour une raison quelconque l'AbortController ne
+  // coupe pas réellement la requête (ça peut arriver avec certaines
+  // connexions qui restent ouvertes côté serveur), on force quand même la
+  // suite du script au bout de FETCH_TIMEOUT_MS + 5s.
+  const timeoutSecours = new Promise((resolve) =>
+    setTimeout(() => resolve(""), FETCH_TIMEOUT_MS + 5000)
+  );
+
+  try {
+    return await Promise.race([tenterFetch, timeoutSecours]);
   } catch (e) {
-    // Timeout, DNS invalide, certificat expiré, site injoignable, etc. :
-    // on n'interrompt pas le script pour autant, on passe à la suite.
     return "";
   } finally {
     clearTimeout(minuteur);
@@ -332,8 +348,10 @@ async function main() {
   }
 
   const lignes = chargerDonnees();
+  console.log(`📄 ${lignes.length} ligne(s) chargée(s) depuis ${DATA_FILE}.`);
 
   const aTraiter = lignes.filter((l) => STATUTS_A_REPRENDRE.has(l.email));
+  console.log(`🔎 ${aTraiter.length} ligne(s) à traiter dans ce cycle.`);
 
   if (aTraiter.length === 0) {
     console.log("🎉 Toutes les lignes ont déjà été traitées avec succès !");
@@ -342,23 +360,36 @@ async function main() {
 
   const heureDebut = Date.now();
   let traitees = 0;
+  let indexCourant = 0;
 
-  for (const ligne of aTraiter) {
+  while (indexCourant < aTraiter.length) {
     if (Date.now() - heureDebut > TIME_LIMIT_MS) {
       console.log(`⏳ Limite de temps atteinte (${TIME_LIMIT_MS} ms). Reprise au prochain cycle.`);
       break;
     }
 
-    ligne.email = "🔄 En cours...";
+    // On traite plusieurs lignes en parallèle (CONCURRENCE à la fois) au
+    // lieu d'une seule à la fois : avec plusieurs milliers de lignes, un
+    // traitement strictement séquentiel serait beaucoup trop lent.
+    const lot = aTraiter.slice(indexCourant, indexCourant + CONCURRENCE);
+    indexCourant += lot.length;
+
+    lot.forEach((ligne) => {
+      ligne.email = "🔄 En cours...";
+    });
     sauvegarderDonnees(lignes);
 
-    await traiterLigne(ligne);
+    await Promise.all(lot.map((ligne) => traiterLigne(ligne)));
+
+    // Une seule écriture disque par lot (au lieu d'une par ligne) : avec
+    // 18 000+ lignes, réécrire tout le CSV à chaque ligne serait très
+    // coûteux en I/O.
     sauvegarderDonnees(lignes);
 
-    traitees++;
-    console.log(`(${traitees}/${aTraiter.length}) ${ligne.url} -> ${ligne.email}`);
-
-    await sleep(DELAY_MS);
+    traitees += lot.length;
+    for (const ligne of lot) {
+      console.log(`(${traitees}/${aTraiter.length}) ${ligne.url} -> ${ligne.email}`);
+    }
   }
 
   const restantes = lignes.filter((l) => STATUTS_A_REPRENDRE.has(l.email)).length;
@@ -369,7 +400,15 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("Erreur fatale :", err);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Sortie forcée : certaines connexions HTTP mal fermées (keep-alive,
+    // socket resté ouvert côté serveur) peuvent sinon empêcher Node de se
+    // terminer de lui-même, ce qui bloquerait le job GitHub Actions jusqu'au
+    // timeout sans raison apparente.
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error("Erreur fatale :", err);
+    process.exit(1);
+  });
