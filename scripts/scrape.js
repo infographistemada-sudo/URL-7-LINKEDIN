@@ -12,6 +12,8 @@ const fs = require("fs");
 const path = require("path");
 const { parse } = require("csv-parse/sync");
 const { stringify } = require("csv-stringify/sync");
+const iconv = require("iconv-lite");
+const jschardet = require("jschardet");
 
 // ----------------------------------------------------------------------
 // Configuration
@@ -25,6 +27,17 @@ const TIME_LIMIT_MS = parseInt(process.env.TIME_LIMIT_MS || "240000", 10);
 const DELAY_MS = parseInt(process.env.DELAY_MS || "300", 10);
 
 const COLONNES = ["url", "email", "reseaux_sociaux", "siren", "siret"];
+
+// Noms de colonnes acceptés en entrée (insensible à la casse/accents) pour
+// chaque champ reconnu. Permet de lire des CSV dont l'en-tête ne correspond
+// pas exactement au format attendu (export Excel, autre outil, etc.).
+const SYNONYMES_COLONNES = {
+  url: ["url", "site", "site web", "website", "lien", "adresse", "adresse web"],
+  email: ["email", "e-mail", "mail", "courriel"],
+  reseaux_sociaux: ["reseaux_sociaux", "reseaux sociaux", "rs", "social", "social media"],
+  siren: ["siren"],
+  siret: ["siret"],
+};
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const RS_REGEX = /href=["'](https?:\/\/(?:www\.)?(?:facebook|instagram)\.com\/[^"']+)["']/gi;
@@ -46,24 +59,135 @@ function sleep(ms) {
 // ----------------------------------------------------------------------
 // Lecture / écriture du CSV
 // ----------------------------------------------------------------------
+// Convertit un buffer brut en texte UTF-8, quel que soit l'encodage d'origine
+// (UTF-8, UTF-8 avec BOM, Windows-1252/Latin1 — encodage typique d'un export
+// Excel français, UTF-16, etc.).
+function decoderEnUtf8(buffer) {
+  // BOM UTF-16 LE/BE explicites
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.toString("utf16le").replace(/^\uFEFF/, "");
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return iconv.decode(buffer, "utf16be").replace(/^\uFEFF/, "");
+  }
+  // BOM UTF-8 explicite
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.toString("utf8").replace(/^\uFEFF/, "");
+  }
+  // Pas de BOM : on laisse jschardet deviner (utile pour les fichiers
+  // exportés depuis Excel en Windows-1252/ISO-8859-1, très courant en FR).
+  const detection = jschardet.detect(buffer);
+  const encodingDetecte = (detection && detection.encoding || "utf-8").toLowerCase();
+  if (encodingDetecte.includes("utf-8") || encodingDetecte.includes("ascii")) {
+    return buffer.toString("utf8");
+  }
+  if (iconv.encodingExists(encodingDetecte)) {
+    return iconv.decode(buffer, encodingDetecte);
+  }
+  // Repli si l'encodage détecté n'est pas géré : Windows-1252 est le cas
+  // le plus fréquent pour un CSV "bizarre" produit sous Windows.
+  return iconv.decode(buffer, "windows-1252");
+}
+
+// Devine le séparateur (virgule, point-virgule ou tabulation) en comptant
+// les occurrences sur les premières lignes non vides.
+function detecterSeparateur(texte) {
+  const premieresLignes = texte.split(/\r?\n/).filter((l) => l.trim() !== "").slice(0, 5);
+  const candidats = [",", ";", "\t"];
+  let meilleur = ",";
+  let meilleurScore = -1;
+  for (const sep of candidats) {
+    const score = premieresLignes.reduce((total, ligne) => total + ligne.split(sep).length - 1, 0);
+    if (score > meilleurScore) {
+      meilleurScore = score;
+      meilleur = sep;
+    }
+  }
+  return meilleurScore > 0 ? meilleur : ",";
+}
+
+function normaliserNomColonne(nom) {
+  return (nom || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, ""); // retire les accents
+}
+
+// Retrouve, pour chaque champ reconnu (url, email, ...), le nom de colonne
+// réellement utilisé dans le fichier source.
+function detecterCorrespondanceColonnes(nomsColonnesSource) {
+  const normalises = nomsColonnesSource.map(normaliserNomColonne);
+  const correspondance = {};
+  for (const [champ, synonymes] of Object.entries(SYNONYMES_COLONNES)) {
+    const synonymesNormalises = synonymes.map(normaliserNomColonne);
+    const index = normalises.findIndex((n) => synonymesNormalises.includes(n));
+    if (index !== -1) correspondance[champ] = nomsColonnesSource[index];
+  }
+  return correspondance;
+}
+
 function chargerDonnees() {
   if (!fs.existsSync(DATA_FILE)) {
     throw new Error(`Fichier introuvable : ${DATA_FILE}`);
   }
-  const contenu = fs.readFileSync(DATA_FILE, "utf8");
-  const lignes = parse(contenu, { columns: true, skip_empty_lines: true });
-  return lignes.map((ligne) => ({
-    url: (ligne.url || "").trim(),
-    email: (ligne.email || "").trim(),
-    reseaux_sociaux: (ligne.reseaux_sociaux || "").trim(),
-    siren: (ligne.siren || "").trim(),
-    siret: (ligne.siret || "").trim(),
-  }));
+
+  const buffer = fs.readFileSync(DATA_FILE);
+  const texte = decoderEnUtf8(buffer).replace(/^\uFEFF/, "");
+  const separateur = detecterSeparateur(texte);
+
+  // 1ère tentative : on suppose qu'il y a un en-tête.
+  const avecEntete = parse(texte, {
+    columns: true,
+    delimiter: separateur,
+    skip_empty_lines: true,
+    relax_column_count: true,
+    trim: true,
+  });
+
+  const correspondance = avecEntete.length > 0
+    ? detecterCorrespondanceColonnes(Object.keys(avecEntete[0]))
+    : {};
+
+  if (correspondance.url) {
+    // En-tête reconnu : on mappe chaque champ vers sa colonne source.
+    return avecEntete.map((ligne) => ({
+      url: (ligne[correspondance.url] || "").toString().trim(),
+      email: (ligne[correspondance.email] || "").toString().trim(),
+      reseaux_sociaux: (ligne[correspondance.reseaux_sociaux] || "").toString().trim(),
+      siren: (ligne[correspondance.siren] || "").toString().trim(),
+      siret: (ligne[correspondance.siret] || "").toString().trim(),
+    }));
+  }
+
+  // 2e tentative : pas d'en-tête reconnu (fichier "juste une liste d'URLs",
+  // avec ou sans première ligne de titre non standard). On relit sans
+  // en-tête et on prend la première colonne comme URL.
+  const sansEntete = parse(texte, {
+    columns: false,
+    delimiter: separateur,
+    skip_empty_lines: true,
+    relax_column_count: true,
+    trim: true,
+  });
+
+  return sansEntete
+    .map((champs) => (champs[0] || "").toString().trim())
+    .filter((valeur) => valeur !== "" && !/^https?:\/\/(?:www\.)?(?:url|site|lien|website)/i.test(valeur))
+    // Si la première ligne ressemble à un intitulé de colonne plutôt qu'à
+    // une vraie URL (ex: "URL", "Site"), on l'ignore.
+    .filter((valeur) => /^https?:\/\//i.test(valeur) || valeur === "")
+    .map((url) => ({ url, email: "", reseaux_sociaux: "", siren: "", siret: "" }));
 }
 
 function sauvegarderDonnees(lignes) {
   const csv = stringify(lignes, { header: true, columns: COLONNES });
-  fs.writeFileSync(DATA_FILE, csv, "utf8");
+  // BOM UTF-8 ajouté pour qu'Excel (notamment sous Windows/FR) affiche
+  // correctement les accents à l'ouverture du fichier. On normalise aussi
+  // toujours vers une sortie standard : séparateur virgule, en-tête fixe,
+  // même si le fichier d'entrée utilisait un autre format.
+  fs.writeFileSync(DATA_FILE, "\uFEFF" + csv, "utf8");
 }
 
 // ----------------------------------------------------------------------

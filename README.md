@@ -51,6 +51,28 @@ Deux façons, comme le bouton "🛑 Arrêter" du script Sheets :
   workflow "Extraction automatique", puis **Disable workflow** (menu
   "..." en haut à droite).
 
+## Format du CSV accepté
+
+Le script lit maintenant `data/leads.csv` de façon tolérante :
+
+- **Encodage** : UTF-8 (avec ou sans BOM), ou Windows-1252/Latin1 (l'export
+  classique d'Excel en français) — l'encodage est détecté automatiquement
+  et converti. Le fichier est toujours réécrit en UTF-8 (avec BOM) après
+  traitement, pour un bon affichage dans Excel.
+- **Séparateur** : virgule ou point-virgule (ou tabulation), détecté
+  automatiquement sur les premières lignes.
+- **En-tête** : reconnu même si les noms diffèrent un peu (ex. `Site`,
+  `Lien`, `Website` pour la colonne URL ; `E-mail`, `Mail`, `Courriel`
+  pour la colonne email — voir `SYNONYMES_COLONNES` dans
+  `scripts/scrape.js` pour la liste complète et l'adapter si besoin).
+- **Sans en-tête du tout** : si le fichier contient juste une liste d'URLs
+  (une par ligne, sans colonnes email/RS/SIREN/SIRET), elles sont prises
+  en compte automatiquement comme colonne `url`.
+
+Dans tous les cas, le fichier est ensuite **normalisé** au format standard
+(`url,email,reseaux_sociaux,siren,siret`, séparateur virgule) lors de la
+sauvegarde des résultats.
+
 ## Réglages
 
 Variables d'environnement passées au script (modifiables dans
