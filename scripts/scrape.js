@@ -25,6 +25,9 @@ const STOP_FILE = process.env.STOP_FILE || path.join(__dirname, "..", "data", "S
 const TIME_LIMIT_MS = parseInt(process.env.TIME_LIMIT_MS || "240000", 10);
 // Petite pause entre deux requêtes pour rester poli envers les sites visités.
 const DELAY_MS = parseInt(process.env.DELAY_MS || "300", 10);
+// Timeout par requête HTTP : évite qu'un site lent ou muet ne bloque tout
+// le script indéfiniment (fetch n'a pas de timeout par défaut).
+const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || "15000", 10);
 
 const COLONNES = ["url", "email", "reseaux_sociaux", "siren", "siret"];
 
@@ -253,14 +256,21 @@ function extraireLiensSecondaires(codeHtml, urlRacineInitiale) {
 }
 
 async function recupererContenuWeb(url) {
+  const controleur = new AbortController();
+  const minuteur = setTimeout(() => controleur.abort(), FETCH_TIMEOUT_MS);
   try {
     const reponse = await fetch(url, {
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+      signal: controleur.signal,
     });
     return await reponse.text();
   } catch (e) {
+    // Timeout, DNS invalide, certificat expiré, site injoignable, etc. :
+    // on n'interrompt pas le script pour autant, on passe à la suite.
     return "";
+  } finally {
+    clearTimeout(minuteur);
   }
 }
 

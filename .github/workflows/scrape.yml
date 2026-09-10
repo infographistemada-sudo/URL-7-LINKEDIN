@@ -18,7 +18,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout du dépôt
         uses: actions/checkout@v4
@@ -33,11 +33,14 @@ jobs:
 
       - name: Lancer l'extraction
         run: npm run scrape
+        timeout-minutes: 8
         env:
           TIME_LIMIT_MS: "240000"
           DELAY_MS: "300"
+          FETCH_TIMEOUT_MS: "15000"
 
       - name: Commit et push des résultats
+        if: always()
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "🤖 Mise à jour automatique des données extraites"
