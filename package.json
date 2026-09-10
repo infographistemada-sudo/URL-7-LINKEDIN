@@ -1,0 +1,17 @@
+{
+  "name": "scraping-auto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Extraction automatique d'emails, réseaux sociaux, SIREN/SIRET depuis une liste d'URLs, exécutée via GitHub Actions.",
+  "main": "scripts/scrape.js",
+  "scripts": {
+    "scrape": "node scripts/scrape.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "csv-stringify": "^6.5.0"
+  }
+}

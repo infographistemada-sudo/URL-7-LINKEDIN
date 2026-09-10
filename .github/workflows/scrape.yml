@@ -1,0 +1,44 @@
+name: Extraction automatique
+
+on:
+  # Se relance automatiquement toutes les 15 minutes.
+  # GitHub peut retarder légèrement les cron sur les repos gratuits.
+  schedule:
+    - cron: "*/15 * * * *"
+  # Permet aussi de lancer le script manuellement depuis l'onglet Actions.
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scraping-auto
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+
+      - name: Installation de Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Installation des dépendances
+        run: npm ci
+
+      - name: Lancer l'extraction
+        run: npm run scrape
+        env:
+          TIME_LIMIT_MS: "240000"
+          DELAY_MS: "300"
+
+      - name: Commit et push des résultats
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 Mise à jour automatique des données extraites"
+          file_pattern: "data/leads.csv"
