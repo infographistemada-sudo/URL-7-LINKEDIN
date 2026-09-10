@@ -251,16 +251,25 @@ function extraireLiensSecondaires(codeHtml, urlRacineInitiale) {
   const liens = [];
   let match;
   while ((match = hrefRegex.exec(codeHtml)) !== null) {
-    const lien = match[1];
+    let lien = match[1].trim();
+
+    // On ignore tout ce qui n'est pas un vrai lien de page HTML : images
+    // encodées en base64, JavaScript, ancres pures, fichiers statiques
+    // (.css/.js/images/etc.) qui contiennent parfois "contact" dans leur
+    // nom sans être une page de contact.
+    if (/^(data:|javascript:|#|mailto:|tel:)/i.test(lien)) continue;
+    if (/\.(css|js|png|jpe?g|gif|webp|svg|ico|woff2?|pdf|zip|json|xml)(\?|#|$)/i.test(lien)) continue;
+
     if (lien.startsWith("http")) liens.push(lien);
     else if (lien.startsWith("/")) liens.push(urlRacine + lien);
-    else if (!lien.startsWith("mailto:") && !lien.startsWith("tel:")) liens.push(urlRacine + "/" + lien);
+    else liens.push(urlRacine + "/" + lien);
   }
   return [...new Set(liens)].slice(0, 3);
 }
 
 async function recupererContenuWeb(url) {
-  console.log(`   ↳ requête : ${url}`);
+  const urlAffichee = url.length > 120 ? url.slice(0, 120) + "…" : url;
+  console.log(`   ↳ requête : ${urlAffichee}`);
   const controleur = new AbortController();
   const minuteur = setTimeout(() => controleur.abort(), FETCH_TIMEOUT_MS);
 
